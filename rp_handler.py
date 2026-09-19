@@ -22,10 +22,31 @@ import io
 import sys
 
 import runpod
+from huggingface_hub import snapshot_download
 from PIL import Image
 
 sys.path.insert(0, '/workspace/IDM-VTON')
 sys.path.insert(0, '/workspace/IDM-VTON/gradio_demo')
+
+# Downloaded here, at container startup, rather than during `docker build` —
+# building with these baked in exceeds RunPod's 30-minute build timeout.
+# This runs once when a worker cold-starts, before it can process its first
+# request, so the first request after a cold start will be noticeably
+# slower (several minutes) while ~17GB downloads. To avoid repeating this
+# download on every new worker/cold start in production, attach a RunPod
+# Network Volume to the endpoint and point local_dir at a path on that
+# volume instead — see this service's README.
+print('Downloading main diffusion weights...')
+snapshot_download(repo_id='yisol/IDM-VTON', local_dir='/workspace/IDM-VTON/ckpt_hf')
+
+print('Downloading human parsing / pose checkpoints...')
+snapshot_download(
+    repo_id='yisol/IDM-VTON',
+    repo_type='space',
+    allow_patterns=['ckpt/*'],
+    local_dir='/workspace/IDM-VTON'
+)
+print('Model weights ready.')
 
 # ADAPT #1: import path/function name — check gradio_demo/app.py in your
 # checkout if this fails.

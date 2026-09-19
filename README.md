@@ -7,39 +7,65 @@ request is actually processing, and it scales to zero when idle.
 
 ## What's here
 
-- `Dockerfile` — clones IDM-VTON, installs its dependencies, bakes in the
-  main model weights, and packages it as a RunPod worker.
-- `rp_handler.py` — the RunPod entry point. It calls IDM-VTON's own
-  `start_tryon` function rather than reimplementing the pipeline, so it
-  inherits whatever quality/behavior the upstream repo has.
+- `Dockerfile` — clones IDM-VTON, installs its dependencies, and packages
+  it as a RunPod worker. Deliberately does NOT download model weights at
+  build time — see below.
+- `rp_handler.py` — the RunPod entry point. Downloads model weights on
+  startup, then calls IDM-VTON's own `start_tryon` function rather than
+  reimplementing the pipeline, so it inherits whatever quality/behavior
+  the upstream repo has.
+
+## A build timeout you will hit if weights download during the build
+
+RunPod's GitHub-based builds have a 30-minute limit. Downloading the
+model weights (~17GB+) during the build easily exceeds that — this is
+why the Dockerfile does not do it. Instead, `rp_handler.py` downloads
+everything itself the moment a worker container starts up.
+
+The tradeoff: the **first request after each cold start** will be slow
+(several minutes, while it downloads everything) rather than instant.
+Subsequent requests to that same warm worker are fast as normal.
+
+To stop repeating the download on every new worker (recommended once
+things are working end-to-end): create a **RunPod Network Volume**,
+attach it to your endpoint, and change the `local_dir` paths in
+`rp_handler.py` to a path on that volume (e.g. `/runpod-volume/ckpt_hf`)
+instead of `/workspace/...`. The first worker to start still downloads
+everything once; every worker after that reads from the volume instead
+of re-downloading.
 
 ## Getting the model checkpoints
 
-Good news: the Dockerfile handles this automatically. Both the main
-diffusion weights and the human parsing/pose checkpoints are pulled
-programmatically from Hugging Face during `docker build` — no manual
-downloads needed. (The IDM-VTON README describes the parsing/pose
-checkpoints as a manual download; they're actually hosted in the
-Hugging Face Space's own repo at a stable path, which is what the
-Dockerfile fetches instead.)
+Both the main diffusion weights and the human parsing/pose checkpoints
+are pulled programmatically from Hugging Face — no manual downloads
+needed. (The IDM-VTON README describes the parsing/pose checkpoints as a
+manual download; they're actually hosted in the Hugging Face Space's own
+repo at a stable path, which is what `rp_handler.py` fetches instead.)
 
-## Build and deploy
+## Deploy
 
+Two ways to get this running on RunPod:
+
+**From GitHub (recommended if your local machine has limited disk space)**
+— RunPod builds the image on their own servers, so your computer's disk
+never comes into play:
+1. Push this folder to a GitHub repo
+2. RunPod console → Settings → Connections → connect GitHub
+3. Serverless → New Endpoint → GitHub Repo → select the repo
+4. GPU: pick one with at least 16-24GB VRAM (e.g. RTX 4090 or A5000) —
+   IDM-VTON is a diffusion pipeline with multiple sub-models loaded at once
+5. Set **Min Workers: 0** and a generous **Execution Timeout** (cold
+   starts that include the weight download can take several minutes;
+   normal inference is faster but still 20-60s+ per image)
+6. Deploy, then grab your **Endpoint ID** and **API Key** from the console
+
+**From Docker Hub (if you'd rather build locally)**
 ```bash
 docker build -t YOUR_DOCKERHUB_USERNAME/fit-preview-tryon .
 docker push YOUR_DOCKERHUB_USERNAME/fit-preview-tryon
 ```
-
-Then in the RunPod console:
-
-1. Serverless → New Endpoint → Custom Source → point it at your pushed image
-2. GPU: pick one with at least 16-24GB VRAM (e.g. RTX 4090 or A5000) —
-   IDM-VTON is a diffusion pipeline with multiple sub-models loaded at once
-3. Set **Min Workers: 0** (scale to zero, only pay per request) and
-   **Max Workers** to whatever concurrency you want
-4. Set an **Idle Timeout** (e.g. 5-10s) and a generous **Execution
-   Timeout** (diffusion inference can take 20-60s+ per image)
-5. Deploy, then grab your **Endpoint ID** and **API Key** from the console
+Then Serverless → New Endpoint → Custom Source → point it at the pushed
+image, and configure GPU/workers/timeout as above.
 
 ## Test it
 
@@ -56,10 +82,13 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
       }'
 ```
 
+The first call after a cold start will take a while (downloading
+weights) — don't assume it's broken if it's slow the first time.
 `/runsync` blocks and returns the result directly (good for testing, but
-RunPod caps this at ~90s); the web app instead uses `/run` + polling
-`/status`, since diffusion inference can run longer than that. See
-`lib/tryon.ts` in the web app for that flow.
+RunPod caps this at ~90s, which the weight-download cold start will
+exceed); the web app instead uses `/run` + polling `/status`, since
+inference (and especially a cold-start download) can run longer than
+that. See `lib/tryon.ts` in the web app for that flow.
 
 ## A note on output size
 

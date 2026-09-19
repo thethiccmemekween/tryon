@@ -25,19 +25,13 @@ WORKDIR /workspace/IDM-VTON
 RUN pip install --no-cache-dir -r requirements.txt || true
 RUN pip install --no-cache-dir runpod huggingface_hub pillow
 
-# --- Download model weights at build time (bakes them into the image, so
-# cold starts don't re-download several GB every time a worker spins up) ---
-# Main diffusion weights:
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='yisol/IDM-VTON', local_dir='/workspace/IDM-VTON/ckpt_hf')"
-
-# Human parsing / OpenPose / DensePose checkpoints — these live inside the
-# Hugging Face Space's own repo (not a separate model repo), fetched here
-# the same programmatic way rather than a manual Google Drive download.
-RUN python3 -c "\
-from huggingface_hub import snapshot_download; \
-snapshot_download(repo_id='yisol/IDM-VTON', repo_type='space', allow_patterns=['ckpt/*'], local_dir='/workspace/IDM-VTON')"
+# --- Model weights are NOT downloaded here ---
+# They're downloaded at container startup instead (see rp_handler.py),
+# because fetching ~17GB during the build exceeds RunPod's 30-minute
+# GitHub build timeout. This keeps the build itself fast; the tradeoff is
+# a slower first request after each cold start (see rp_handler.py's
+# comments, and the README, for how to avoid repeating this on every
+# cold start using a RunPod Network Volume).
 
 COPY rp_handler.py /workspace/IDM-VTON/rp_handler.py
 
