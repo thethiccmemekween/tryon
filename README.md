@@ -26,12 +26,16 @@ The tradeoff: the **first request after each cold start** will be slow
 (several minutes, while it downloads everything) rather than instant.
 Subsequent requests to that same warm worker are fast as normal.
 
-To stop repeating the download on every new worker (recommended once
-things are working end-to-end): create a **RunPod Network Volume**,
-attach it to your endpoint, and change the `local_dir` paths in
-`rp_handler.py` to a path on that volume (e.g. `/runpod-volume/ckpt_hf`)
-instead of `/workspace/...`. The first worker to start still downloads
-everything once; every worker after that reads from the volume instead
+**A RunPod Network Volume is required, not optional**, on this endpoint —
+the container's own disk isn't big enough to hold the ~17GB of weights
+(this showed up as a `No space left on device` crash-loop in worker logs
+the first time this was deployed). `rp_handler.py` downloads weights onto
+`/runpod-volume/idm-vton-weights` and symlinks them into place at
+`IDM-VTON/ckpt_hf` and `IDM-VTON/ckpt` so the upstream code finds them at
+its expected paths. Attach a volume (Edit Endpoint > Network volumes,
+same datacenter region as your GPU workers, 50GB+) before deploying. As
+a side benefit, only the first worker ever downloads anything — later
+workers reuse what's already on the volume instead
 of re-downloading.
 
 ## Getting the model checkpoints

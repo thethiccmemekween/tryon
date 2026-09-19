@@ -19,6 +19,7 @@ and adjust the two spots marked ADAPT below.
 
 import base64
 import io
+import os
 import sys
 
 import runpod
@@ -28,25 +29,43 @@ from PIL import Image
 sys.path.insert(0, '/workspace/IDM-VTON')
 sys.path.insert(0, '/workspace/IDM-VTON/gradio_demo')
 
-# Downloaded here, at container startup, rather than during `docker build` —
-# building with these baked in exceeds RunPod's 30-minute build timeout.
-# This runs once when a worker cold-starts, before it can process its first
-# request, so the first request after a cold start will be noticeably
-# slower (several minutes) while ~17GB downloads. To avoid repeating this
-# download on every new worker/cold start in production, attach a RunPod
-# Network Volume to the endpoint and point local_dir at a path on that
-# volume instead — see this service's README.
+# The container disk on this endpoint is too small to hold the ~17GB of
+# weights (that's what caused the earlier "No space left on device" crash),
+# so weights are downloaded onto the attached RunPod Network Volume
+# (mounted at /runpod-volume) instead of the container's own disk. IDM-VTON's
+# code expects checkpoints at fixed paths under the repo directory
+# (IDM-VTON/ckpt_hf, IDM-VTON/ckpt), so we symlink those paths to the volume
+# rather than changing IDM-VTON's own code. This also means only the first
+# worker ever downloads anything — later workers reuse what's already on
+# the volume.
+if not os.path.isdir('/runpod-volume'):
+    raise RuntimeError(
+        'Expected a RunPod Network Volume mounted at /runpod-volume — attach '
+        'one to this endpoint (Edit Endpoint > Network volumes). The '
+        'container disk alone is not large enough for IDM-VTON\'s weights.'
+    )
+
+WEIGHTS_ROOT = '/runpod-volume/idm-vton-weights'
+os.makedirs(WEIGHTS_ROOT, exist_ok=True)
+
+MAIN_WEIGHTS_DIR = os.path.join(WEIGHTS_ROOT, 'ckpt_hf')
 print('Downloading main diffusion weights...')
-snapshot_download(repo_id='yisol/IDM-VTON', local_dir='/workspace/IDM-VTON/ckpt_hf')
+snapshot_download(repo_id='yisol/IDM-VTON', local_dir=MAIN_WEIGHTS_DIR)
 
 print('Downloading human parsing / pose checkpoints...')
 snapshot_download(
     repo_id='yisol/IDM-VTON',
     repo_type='space',
     allow_patterns=['ckpt/*'],
-    local_dir='/workspace/IDM-VTON'
+    local_dir=WEIGHTS_ROOT
 )
 print('Model weights ready.')
+
+for target_name in ('ckpt_hf', 'ckpt'):
+    link_path = f'/workspace/IDM-VTON/{target_name}'
+    volume_path = os.path.join(WEIGHTS_ROOT, target_name)
+    if not os.path.lexists(link_path):
+        os.symlink(volume_path, link_path)
 
 # ADAPT #1: import path/function name — check gradio_demo/app.py in your
 # checkout if this fails.
