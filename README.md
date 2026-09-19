@@ -26,17 +26,19 @@ The tradeoff: the **first request after each cold start** will be slow
 (several minutes, while it downloads everything) rather than instant.
 Subsequent requests to that same warm worker are fast as normal.
 
-**A RunPod Network Volume is required, not optional**, on this endpoint —
-the container's own disk isn't big enough to hold the ~17GB of weights
-(this showed up as a `No space left on device` crash-loop in worker logs
-the first time this was deployed). `rp_handler.py` downloads weights onto
-`/runpod-volume/idm-vton-weights` and symlinks them into place at
-`IDM-VTON/ckpt_hf` and `IDM-VTON/ckpt` so the upstream code finds them at
-its expected paths. Attach a volume (Edit Endpoint > Network volumes,
-same datacenter region as your GPU workers, 50GB+) before deploying. As
-a side benefit, only the first worker ever downloads anything — later
-workers reuse what's already on the volume instead
-of re-downloading.
+**Make sure the endpoint's Container Disk is large enough (50GB+) at
+creation time** — the default on some templates is too small to hold the
+~17GB of weights plus the cloned repo and dependencies, which shows up as
+a `No space left on device` crash-loop in worker logs. Container Disk
+size can only be set when an endpoint is *created*, not edited afterward,
+so if you hit this, recreate the endpoint with a bigger disk rather than
+trying to fix it via Edit Endpoint.
+
+A RunPod Network Volume is an alternative fix (and avoids re-downloading
+weights on every new worker), but it also pins the endpoint to that
+volume's specific datacenter, which can make it harder to find available
+GPU capacity — a plain larger Container Disk, with GPU selection left
+open across datacenters, is the simpler starting point.
 
 ## Getting the model checkpoints
 
